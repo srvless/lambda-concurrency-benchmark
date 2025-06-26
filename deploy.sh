@@ -52,23 +52,6 @@ check_requirements() {
     print_status "All requirements satisfied ✅"
 }
 
-# Package Lambda function
-package_lambda() {
-    print_status "Packaging Lambda function..."
-    
-    # Remove existing package
-    rm -f lambda_function.zip
-    rm -f terraform/lambda_function.zip
-    
-    # Create zip package
-    zip lambda_function.zip lambda_function.py
-    
-    # Copy to terraform directory
-    cp lambda_function.zip terraform/
-    
-    print_status "Lambda function packaged ✅"
-}
-
 # Deploy infrastructure
 deploy_infrastructure() {
     print_status "Deploying infrastructure with Terraform..."
@@ -138,10 +121,18 @@ update_concurrency() {
     fi
 }
 
+# Trigger provisioned concurrency
+setup_provisioned_concurrency() {
+    print_status "Setting up provisioned concurrency..."
+    cd terraform
+    terraform apply -var="use_provisioned_concurrency=true" -auto-approve -replace=archive_file.lambda_zip
+    cd ..
+    print_status "Provisioned concurrency setup ✅"
+}
+
 # Main deployment function
 main_deploy() {
     check_requirements
-    package_lambda
     deploy_infrastructure
     test_deployment
     
@@ -173,8 +164,8 @@ case "${1:-deploy}" in
         fi
         update_concurrency "$2"
         ;;
-    "package")
-        package_lambda
+    "setup-provisioned-concurrency")
+        setup_provisioned_concurrency
         ;;
     "test")
         # Get API URL from Terraform output

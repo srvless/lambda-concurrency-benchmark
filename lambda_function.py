@@ -3,6 +3,10 @@ import time
 import uuid
 from datetime import datetime
 
+# Initialize clients in order to increase the cold start time
+time.sleep(2)
+print("Lambda function initialized")
+
 def lambda_handler(event, context):
     """
     Lambda function to test reserved concurrency behavior.
@@ -44,3 +48,4 @@ def lambda_handler(event, context):
         },
         "body": json.dumps(response_body)
     } 
+ 

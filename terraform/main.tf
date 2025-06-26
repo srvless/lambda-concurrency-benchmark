@@ -15,7 +15,7 @@ provider "aws" {
 variable "aws_region" {
   description = "AWS region"
   type        = string
-  default     = "us-east-1"
+  default     = "eu-west-2"
 }
 
 variable "lambda_name" {
@@ -36,9 +36,27 @@ variable "use_unreserved_concurrency" {
   default     = false
 }
 
+variable "use_provisioned_concurrency" {
+  description = "Whether to enable provisioned concurrency for the Lambda function"
+  type        = bool
+  default     = false
+}
+
+variable "provisioned_concurrency" {
+  description = "Number of provisioned concurrency instances for the Lambda function"
+  type        = number
+  default     = 1
+}
+
+variable "lambda_alias_name" {
+  description = "Alias name for provisioned concurrency"
+  type        = string
+  default     = "provisioned"
+}
+
 # IAM role for Lambda
 resource "aws_iam_role" "lambda_role" {
-  name = "${var.lambda_name}-role"
+  name = "${var.lambda_name}-${var.aws_region}-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -60,14 +78,20 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+data "archive_file" "lambda_zip" {
+  type        = "zip"
+  source_file = "${path.module}/../lambda_function.py"
+  output_path = "${path.module}/lambda_function.zip"
+}
 # Lambda function
 resource "aws_lambda_function" "concurrency_test" {
-  filename      = "lambda_function.zip"
+  filename      = data.archive_file.lambda_zip.output_path
   function_name = var.lambda_name
   role          = aws_iam_role.lambda_role.arn
   handler       = "lambda_function.lambda_handler"
   runtime       = "python3.9"
   timeout       = 30
+  publish       = var.use_provisioned_concurrency
 
   # Set reserved concurrency (null means unreserved)
   reserved_concurrent_executions = var.use_unreserved_concurrency ? null : var.reserved_concurrency
@@ -75,6 +99,21 @@ resource "aws_lambda_function" "concurrency_test" {
   depends_on = [
     aws_iam_role_policy_attachment.lambda_basic_execution,
   ]
+}
+
+resource "aws_lambda_alias" "concurrency_test" {
+  count            = var.use_provisioned_concurrency ? 1 : 0
+  name             = var.lambda_alias_name
+  function_name    = aws_lambda_function.concurrency_test.function_name
+  function_version = aws_lambda_function.concurrency_test.version
+}
+
+resource "aws_lambda_provisioned_concurrency_config" "concurrency_test" {
+  count                             = var.use_provisioned_concurrency ? 1 : 0
+  function_name                     = aws_lambda_function.concurrency_test.function_name
+  qualifier                         = aws_lambda_alias.concurrency_test[0].name
+  provisioned_concurrent_executions = var.provisioned_concurrency
+  depends_on                        = [aws_lambda_alias.concurrency_test]
 }
 
 # API Gateway REST API
@@ -118,7 +157,7 @@ resource "aws_api_gateway_integration" "lambda_integration" {
 
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = aws_lambda_function.concurrency_test.invoke_arn
+  uri                     = var.use_provisioned_concurrency ? aws_lambda_alias.concurrency_test[0].invoke_arn : aws_lambda_function.concurrency_test.invoke_arn
 }
 
 # API Gateway Integration (OPTIONS)
@@ -185,6 +224,8 @@ resource "aws_api_gateway_deployment" "api_deployment" {
       aws_api_gateway_resource.test_resource.id,
       aws_api_gateway_method.test_method.id,
       aws_api_gateway_integration.lambda_integration.id,
+      aws_lambda_function.concurrency_test,
+      aws_lambda_alias.concurrency_test,
     ]))
   }
 
@@ -215,4 +256,12 @@ output "reserved_concurrency" {
 
 output "concurrency_type" {
   value = var.use_unreserved_concurrency ? "unreserved" : "reserved"
+}
+
+output "provisioned_concurrency" {
+  value = var.use_provisioned_concurrency ? var.provisioned_concurrency : null
+}
+
+output "lambda_alias_name" {
+  value = var.use_provisioned_concurrency ? aws_lambda_alias.concurrency_test[0].name : null
 }
