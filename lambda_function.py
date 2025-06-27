@@ -39,7 +39,6 @@ def lambda_handler(event, context):
         "processing_time": processing_time,
         "cold_start_time": _cold_start_time if cold_start else 0,
         "cold_start": cold_start,
-        "provisioned_concurrency": provisioned_concurrency,
         "message": "Lambda executed successfully",
         "remaining_time": context.get_remaining_time_in_millis() if context else 0
     }
