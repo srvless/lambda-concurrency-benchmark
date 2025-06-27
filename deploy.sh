@@ -52,23 +52,6 @@ check_requirements() {
     print_status "All requirements satisfied ✅"
 }
 
-# Package Lambda function
-package_lambda() {
-    print_status "Packaging Lambda function..."
-    
-    # Remove existing package
-    rm -f lambda_function.zip
-    rm -f terraform/lambda_function.zip
-    
-    # Create zip package
-    zip lambda_function.zip lambda_function.py
-    
-    # Copy to terraform directory
-    cp lambda_function.zip terraform/
-    
-    print_status "Lambda function packaged ✅"
-}
-
 # Deploy infrastructure
 deploy_infrastructure() {
     print_status "Deploying infrastructure with Terraform..."
@@ -138,10 +121,75 @@ update_concurrency() {
     fi
 }
 
+# Helper: Wait for provisioned concurrency to become READY
+wait_for_provisioned_ready() {
+    local LAMBDA_NAME=$1
+    local ALIAS_NAME=$2
+    local AWS_REGION=$3
+    print_status "Waiting for provisioned concurrency to become READY..."
+    local max_attempts=30
+    local attempt=1
+    local status=""
+    while [ $attempt -le $max_attempts ]; do
+        status=$(aws lambda get-provisioned-concurrency-config \
+            --function-name "$LAMBDA_NAME" \
+            --qualifier "$ALIAS_NAME" \
+            --query 'Status' \
+            --region "$AWS_REGION" \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+        if [ "$status" = "READY" ]; then
+            print_status "Provisioned concurrency is READY ✅"
+            break
+        elif [ "$status" = "NOT_FOUND" ]; then
+            print_warning "Provisioned concurrency config not found yet (attempt $attempt/$max_attempts)"
+        else
+            print_status "Current status: $status (attempt $attempt/$max_attempts)"
+        fi
+        attempt=$((attempt + 1))
+        sleep 5
+    done
+    if [ "$status" != "READY" ]; then
+        print_error "Provisioned concurrency did not become READY after $((max_attempts * 5)) seconds. Last status: $status"
+        exit 1
+    fi
+}
+
+# Setup provisioned concurrency (initial setup only)
+setup_provisioned_concurrency() {
+    local provisioned_concurrency=$1
+    print_status "Setting up provisioned concurrency with $provisioned_concurrency..."
+    cd terraform
+    terraform apply -var="use_provisioned_concurrency=true" -var="provisioned_concurrency=$provisioned_concurrency" -auto-approve
+    LAMBDA_NAME=$(terraform output -raw lambda_function_name)
+    ALIAS_NAME=$(terraform output -raw lambda_alias_name)
+    AWS_REGION=$(terraform output -raw aws_region)
+    cd ..
+    wait_for_provisioned_ready "$LAMBDA_NAME" "$ALIAS_NAME" "$AWS_REGION"
+    print_status "Provisioned concurrency setup ✅"
+}
+
+# Force a cold start for provisioned concurrency by recycling environments
+force_provisioned_cold_start() {
+    local provisioned_concurrency=$1
+    print_status "Forcing cold start for provisioned concurrency with $provisioned_concurrency..."
+    cd terraform
+    LAMBDA_NAME=$(terraform output -raw lambda_function_name)
+    ALIAS_NAME=$(terraform output -raw lambda_alias_name)
+    AWS_REGION=$(terraform output -raw aws_region)
+    cd ..
+    print_status "Forcing cold start by updating memory size..."
+    aws lambda update-function-configuration --function-name "$LAMBDA_NAME" --memory-size 256 --region "$AWS_REGION" > /dev/null 2>&1
+    print_status "Re-applying provisioned concurrency to recycle environments..."
+    cd terraform
+    terraform apply -var="use_provisioned_concurrency=true" -var="provisioned_concurrency=$provisioned_concurrency" -auto-approve
+    cd ..
+    wait_for_provisioned_ready "$LAMBDA_NAME" "$ALIAS_NAME" "$AWS_REGION"
+    print_status "Provisioned concurrency cold start forced."
+}
+
 # Main deployment function
 main_deploy() {
     check_requirements
-    package_lambda
     deploy_infrastructure
     test_deployment
     
@@ -173,8 +221,11 @@ case "${1:-deploy}" in
         fi
         update_concurrency "$2"
         ;;
-    "package")
-        package_lambda
+    "setup-provisioned-concurrency")
+        setup_provisioned_concurrency "$2"
+        ;;
+    "force-provisioned-cold-start")
+        force_provisioned_cold_start "$2"
         ;;
     "test")
         # Get API URL from Terraform output
@@ -213,12 +264,16 @@ case "${1:-deploy}" in
         echo "  package                               Package Lambda function only"
         echo "  test                                  Test deployed infrastructure"
         echo "  destroy                               Destroy all AWS resources"
+        echo "  setup-provisioned-concurrency [num]   Setup provisioned concurrency (default: 1)"
+        echo "  force-provisioned-cold-start [num]    Force cold start for provisioned concurrency (default: 1)"
         echo "  help                                  Show this help message"
         echo ""
         echo "Concurrency Examples:"
         echo "  ./deploy.sh update-concurrency 5         # Set reserved concurrency to 5"
         echo "  ./deploy.sh update-concurrency 50        # Set reserved concurrency to 50"
         echo "  ./deploy.sh update-concurrency unreserved # Use unreserved concurrency (no limits)"
+        echo "  ./deploy.sh setup-provisioned-concurrency 3 # Set provisioned concurrency to 3"
+        echo "  ./deploy.sh force-provisioned-cold-start 3 # Force cold start for provisioned concurrency"
         echo ""
         ;;
     *)

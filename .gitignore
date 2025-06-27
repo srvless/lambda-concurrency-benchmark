@@ -292,3 +292,5 @@ Sessionx.vim
 *~
 tags
 [._]*.un~ 
+
+results/

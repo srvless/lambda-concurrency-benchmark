@@ -124,11 +124,18 @@ def run_concurrency_test():
                     response_data = response.json()
                     result['lambda_execution_id'] = response_data.get('execution_id', 'unknown')
                     result['lambda_timestamp'] = response_data.get('timestamp', 'unknown')
+                    # Add cold start info if present
+                    result['cold_start'] = response_data.get('cold_start', None)
+                    result['cold_start_time'] = response_data.get('cold_start_time', None)
                 except:
                     result['lambda_execution_id'] = 'parse_error'
                     result['lambda_timestamp'] = 'parse_error'
+                    result['cold_start'] = None
+                    result['cold_start_time'] = None
             else:
                 result['error'] = response.text[:200]  # Limit error message length
+                result['cold_start'] = None
+                result['cold_start_time'] = None
                 
         except requests.exceptions.Timeout:
             end_time = time.time()
@@ -140,7 +147,9 @@ def run_concurrency_test():
                 'timestamp': datetime.now().isoformat(),
                 'error': 'Request timeout',
                 'lambda_execution_id': 'timeout',
-                'lambda_timestamp': 'timeout'
+                'lambda_timestamp': 'timeout',
+                'cold_start': None,
+                'cold_start_time': None
             }
         except Exception as e:
             end_time = time.time()
@@ -152,7 +161,9 @@ def run_concurrency_test():
                 'timestamp': datetime.now().isoformat(),
                 'error': str(e)[:200],
                 'lambda_execution_id': 'error',
-                'lambda_timestamp': 'error'
+                'lambda_timestamp': 'error',
+                'cold_start': None,
+                'cold_start_time': None
             }
         
         # Add result to global results
@@ -209,6 +220,11 @@ def run_concurrency_test():
         failed_requests = [r for r in test_results if not r['success']]
         throttled_requests = failed_requests
         
+        # Cold start stats
+        cold_starts = [r for r in successful_requests if r.get('cold_start')]
+        num_cold_starts = len(cold_starts)
+        avg_cold_start_time = round(sum(r.get('cold_start_time', 0) or 0 for r in cold_starts) / num_cold_starts, 3) if num_cold_starts > 0 else 0
+        
         # Detect concurrency type based on results
         success_rate = round(len(successful_requests) / len(test_results) * 100, 2)
         
@@ -236,7 +252,9 @@ def run_concurrency_test():
                 sum(r['response_time'] for r in successful_requests) / max(len(successful_requests), 1), 3
             ),
             'min_response_time': min((r['response_time'] for r in successful_requests), default=0),
-            'max_response_time': max((r['response_time'] for r in successful_requests), default=0)
+            'max_response_time': max((r['response_time'] for r in successful_requests), default=0),
+            'cold_starts': num_cold_starts,
+            'avg_cold_start_time': avg_cold_start_time
         }
         
         # Send completion update
@@ -285,15 +303,17 @@ def list_result_files():
                 filepath = os.path.join('results', filename)
                 with open(filepath, 'r') as f:
                     data = json.load(f)
+                    stats = data.get('stats', {})
                     files.append({
                         'filename': filename,
-                        'test_id': data['stats']['test_id'],
-                        'timestamp': data['stats'].get('timestamp', 'unknown'),
-                        'total_requests': data['stats']['total_requests'],
-                        'success_rate': data['stats']['success_rate'],
-                        'reserved_concurrency': data['stats']['reserved_concurrency']
+                        'test_id': stats.get('test_id', 'unknown'),
+                        'timestamp': stats.get('timestamp', 'unknown'),
+                        'total_requests': stats.get('total_requests', 0),
+                        'success_rate': stats.get('success_rate', 0),
+                        'reserved_concurrency': stats.get('reserved_concurrency', 'unknown'),
+                        'cold_starts': stats.get('cold_starts', None),
+                        'avg_cold_start_time': stats.get('avg_cold_start_time', None)
                     })
-        
         # Sort by filename (which includes timestamp)
         files.sort(key=lambda x: x['filename'], reverse=True)
         return jsonify(files)

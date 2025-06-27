@@ -62,6 +62,34 @@ This will:
 - Set reserved concurrency to 5
 - Output the API Gateway URL
 
+#### Deploy with Provisioned Concurrency
+
+Provisioned concurrency keeps a specified number of Lambda instances pre-initialized and ready to respond instantly, eliminating cold starts for critical workloads.
+
+To deploy or update with provisioned concurrency:
+
+```bash
+# Set up provisioned concurrency (e.g., 3 pre-initialized instances)
+./deploy.sh setup-provisioned-concurrency 3
+```
+
+- You can change the number to any value you need.
+- The script will ensure provisioned concurrency is ready before you run tests.
+- The dashboard and Lambda function will show that cold starts are eliminated for provisioned concurrency invocations.
+
+#### Forcing a Cold Start for Provisioned Concurrency
+
+If you want to force a cold start for provisioned concurrency environments (to observe initialization behavior or benchmark cold start elimination):
+
+- Use the following command:
+
+```bash
+./deploy.sh force-provisioned-cold-start 3
+```
+
+- This will recycle the provisioned environments by updating the Lambda configuration and re-applying provisioned concurrency.
+- The next invocations will use freshly initialized environments, allowing you to observe the cold start process (which should be eliminated for provisioned concurrency).
+
 ### Step 2: Start the Web Interface
 
 ```bash
@@ -85,11 +113,23 @@ The dashboard will automatically detect the concurrency settings from your test 
 
 ## 📊 Understanding the Results
 
+### Cold Start and Provisioned Concurrency Detection
+
+- The Lambda function now reports if a request was a cold start (`cold_start: true`) and the initialization time (`cold_start_time`).
+- For provisioned concurrency invocations, `cold_start` is always `false` and `cold_start_time` is 0, as AWS pre-initializes the environment.
+- The dashboard visualizes cold start events, so you can distinguish between regular and provisioned cold starts.
+
 ### Expected Behavior with Reserved Concurrency = 5
 
 - **Successful Requests**: ~5-10 (only these execute within concurrency limit)
 - **Throttled Requests**: ~90-95 (HTTP 429 - rate limited)
 - **Success Rate**: ~5-10%
+- **Cold Starts**: Only the first request in a new environment (not provisioned concurrency) will show `cold_start: true`.
+
+### Expected Behavior with Provisioned Concurrency
+
+- **Cold Start**: Will be `false` for provisioned concurrency invocations, as AWS pre-initializes the environment.
+- **Cold Start Time**: Will be 0 for provisioned concurrency invocations.
 
 ### Expected Behavior with Unreserved Concurrency
 
@@ -107,6 +147,8 @@ The dashboard will automatically detect the concurrency settings from your test 
 | **Success Rate** | Percentage of successful requests |
 | **Reserved Concurrency** | Lambda function's concurrency limit |
 | **Avg Response Time** | Average time for successful requests |
+| **Cold Start** | Whether the Lambda experienced a cold start (first invocation in a new environment, not provisioned concurrency) |
+| **Cold Start Time** | Time spent in initialization during a cold start (seconds) |
 
 ## 🔧 Advanced Usage
 
