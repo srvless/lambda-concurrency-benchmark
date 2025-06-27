@@ -121,12 +121,56 @@ update_concurrency() {
     fi
 }
 
-# Trigger provisioned concurrency
+# Setup provsionsed concurrecy
 setup_provisioned_concurrency() {
-    print_status "Setting up provisioned concurrency..."
+    local provisioned_concurrency=$1
+    print_status "Setting up provisioned concurrency with $provisioned_concurrency..."
     cd terraform
-    terraform apply -var="use_provisioned_concurrency=true" -auto-approve -replace=archive_file.lambda_zip
+    terraform apply -var="use_provisioned_concurrency=true" -var="provisioned_concurrency=$provisioned_concurrency" -auto-approve
+    LAMBDA_NAME=$(terraform output -raw lambda_function_name)
+    ALIAS_NAME=$(terraform output -raw lambda_alias_name)
+    AWS_REGION=$(terraform output -raw aws_region)
+    print_status "Checking provisioned concurrency status after apply..."
+    local status=""
+    status=$(aws lambda get-provisioned-concurrency-config \
+        --function-name "$LAMBDA_NAME" \
+        --qualifier "$ALIAS_NAME" \
+        --query 'Status' \
+        --region "$AWS_REGION" \
+        --output text 2>/dev/null || echo "NOT_FOUND")
+    if [ "$status" = "READY" ]; then
+        print_status "Provisioned concurrency is immediately READY. Forcing cold start by updating memory size..."
+        # Get current memory size
+        aws lambda update-function-configuration --function-name "$LAMBDA_NAME" --memory-size 256 --region "$AWS_REGION" > /dev/null 2>&1
+        terraform apply -var="use_provisioned_concurrency=true" -var="provisioned_concurrency=$provisioned_concurrency" -auto-approve 
+    fi
+
     cd ..
+    print_status "Waiting for provisioned concurrency to become READY..."
+    local max_attempts=30
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        status=$(aws lambda get-provisioned-concurrency-config \
+            --function-name "$LAMBDA_NAME" \
+            --qualifier "$ALIAS_NAME" \
+            --query 'Status' \
+            --region "$AWS_REGION" \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+        if [ "$status" = "READY" ]; then
+            print_status "Provisioned concurrency is READY ✅"
+            break
+        elif [ "$status" = "NOT_FOUND" ]; then
+            print_warning "Provisioned concurrency config not found yet (attempt $attempt/$max_attempts)"
+        else
+            print_status "Current status: $status (attempt $attempt/$max_attempts)"
+        fi
+        attempt=$((attempt + 1))
+        sleep 5
+    done
+    if [ "$status" != "READY" ]; then
+        print_error "Provisioned concurrency did not become READY after $((max_attempts * 5)) seconds. Last status: $status"
+        exit 1
+    fi
     print_status "Provisioned concurrency setup ✅"
 }
 
@@ -165,7 +209,7 @@ case "${1:-deploy}" in
         update_concurrency "$2"
         ;;
     "setup-provisioned-concurrency")
-        setup_provisioned_concurrency
+        setup_provisioned_concurrency "$2"
         ;;
     "test")
         # Get API URL from Terraform output
@@ -204,12 +248,14 @@ case "${1:-deploy}" in
         echo "  package                               Package Lambda function only"
         echo "  test                                  Test deployed infrastructure"
         echo "  destroy                               Destroy all AWS resources"
+        echo "  setup-provisioned-concurrency [num]   Setup provisioned concurrency (default: 1)"
         echo "  help                                  Show this help message"
         echo ""
         echo "Concurrency Examples:"
         echo "  ./deploy.sh update-concurrency 5         # Set reserved concurrency to 5"
         echo "  ./deploy.sh update-concurrency 50        # Set reserved concurrency to 50"
         echo "  ./deploy.sh update-concurrency unreserved # Use unreserved concurrency (no limits)"
+        echo "  ./deploy.sh setup-provisioned-concurrency 3 # Set provisioned concurrency to 3"
         echo ""
         ;;
     *)

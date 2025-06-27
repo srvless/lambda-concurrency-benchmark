@@ -85,13 +85,14 @@ data "archive_file" "lambda_zip" {
 }
 # Lambda function
 resource "aws_lambda_function" "concurrency_test" {
-  filename      = data.archive_file.lambda_zip.output_path
-  function_name = var.lambda_name
-  role          = aws_iam_role.lambda_role.arn
-  handler       = "lambda_function.lambda_handler"
-  runtime       = "python3.9"
-  timeout       = 30
-  publish       = var.use_provisioned_concurrency
+  filename         = data.archive_file.lambda_zip.output_path
+  source_code_hash = filebase64sha256(data.archive_file.lambda_zip.output_path)
+  function_name    = var.lambda_name
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "lambda_function.lambda_handler"
+  runtime          = "python3.9"
+  timeout          = 30
+  publish          = var.use_provisioned_concurrency
 
   # Set reserved concurrency (null means unreserved)
   reserved_concurrent_executions = var.use_unreserved_concurrency ? null : var.reserved_concurrency
@@ -208,6 +209,7 @@ resource "aws_lambda_permission" "api_gateway_lambda" {
   principal     = "apigateway.amazonaws.com"
 
   source_arn = "${aws_api_gateway_rest_api.concurrency_api.execution_arn}/*/*"
+  qualifier  = var.use_provisioned_concurrency ? aws_lambda_alias.concurrency_test[0].name : null
 }
 
 # API Gateway Deployment
@@ -264,4 +266,8 @@ output "provisioned_concurrency" {
 
 output "lambda_alias_name" {
   value = var.use_provisioned_concurrency ? aws_lambda_alias.concurrency_test[0].name : null
+}
+
+output "aws_region" {
+  value = var.aws_region
 }
